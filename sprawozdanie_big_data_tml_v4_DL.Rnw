@@ -1,0 +1,1001 @@
+
+\documentclass[12pt, a4paper]{article}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% dodatkowe pakiety LaTeX'a
+\usepackage[OT4]{polski}
+\usepackage[utf8]{inputenc}
+\usepackage[top=2.5cm, bottom=2.5cm, left=2cm, right=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[colorlinks=true, linkcolor=blue]{hyperref}
+\usepackage{multirow}
+\usepackage{makecell} % for more vertical space in cells
+\setcellgapes{5pt}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ustawienia globalne
+<<ustawienia_globalne, echo=FALSE, warning=FALSE, comment=F, message=F>>=
+library(knitr)
+library(kableExtra)
+library(xtable) #pakiet do tworzenia tabel w formacie LaTeX'a
+opts_chunk$set(fig.path='figure/', fig.align='center', fig.pos='H',fig.width=5, fig.height=4)
+@
+
+
+\begin{document}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% strona tytulowa
+\title{Sprawozdanie z projektu Big Data}
+\author{Michał Turek, 246993, Michał Maj 256556, Damian Lewańczyk 242999}
+\maketitle
+\tableofcontents
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Wstęp}
+
+W erze cyfrowej, fora internetowe są skarbnicą wiedzy i doświadczeń użytkowników z całego świata. Jednym z takich miejsc, gdzie gracze mogą dzielić się swoimi przemyśleniami, pytaniami i rozwiązaniami, jest platforma Gaming Stack Exchange. Jest to część szerszej sieci Stack Exchange, która oferuje specjalistyczne fora dla różnych dziedzin i zainteresowań. Forum gaming.stackexchange skupia się na pytaniach i odpowiedziach dotyczących szeroko pojętych gier – od konsolowych po komputerowe, od strategii po gry zręcznościowe.
+
+Celem naszej analizy będzie zrozumienie dynamiki i zachowań użytkowników na tym forum, a w szczególności identyfikacja czynników, które mogą wpływać na otrzymanie zaakceptowanej odpowiedzi na zadane pytanie. Zrozumienie tych mechanizmów może nie tylko rzucić światło na to, jakie treści są najbardziej wartościowe dla społeczności, ale także może pomóc w poprawie jakości interakcji na forum i zwiększeniu szans użytkowników na uzyskanie satysfakcjonujących odpowiedzi.
+
+Do analizy wykorzystamy zbiór danych zebranych ze zrzutów bazy danych naszego forum. Dzielą się one na 8 tabel: Badges, Comments, PostHistory, PostLinks, Posts, Tags, Users i Votes. W naszych badaniach skupimy się głównie na danych zawartych w Posts, Users i Tags. Na ich podstawie wybierzemy zmienne, które najlepiej oddadzą istotę problemu, oraz dobrze wpasują się do modeli. Stworzymy również kilka własnych zmiennych, na podstawie istniejących, w celu polepszenia dokładności modelu. W celu modelowania wykorzystamy metody regresji logistycznej, drzewa decyzyjnego i lasów losowych, zaimplementowanych w pakiecie $SparkR$. Większość przekształceń na naszych danych wykonamy również wykorzystując Sparkowe funkcje.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Opisowa analiza danych}
+
+Zacznijmy od opisowej analizy danych w celu lepszego zapoznania się z nimi i ich zrozumieniu, co będzie niezbędne w dalszej części analiz. Tak jak wspomnieliśmy we wstępie, nasze dane dzielą się na 8 tabel. Opiszemy teraz krótko każdą z nich. 
+
+\subsection{Tabela Posts}
+
+Tabela Posts jest rdzeniem forum, zawiera bowiem pytania i odpowiedzi użytkowników. Do jej najważniejszych kolumn należą:
+
+\begin{itemize}
+  \item \textbf{Id}: unikalny identyfikator postu.
+  \item \textbf{PostTypeId}: identyfikator typu postu, gdzie $1$ oznacza pytanie, a $2$ odpowiedź. Pozostałe identyfikatory $(3-8)$ nas nie będą interesowały.
+  \item \textbf{AcceptedAnswerId}: identyfikator zaakceptowanej odpowiedzi na pytanie. Jest to jedna z najważniejszych dla nas kolumn, ponieważ to na jej podstawie będziemy sprawdzali, czy na dane pytanie dostaliśmy zaakceptowaną odpowiedź.
+  \item \textbf{CreationDate}: data utworzenia postu.
+  \item \textbf{Score}: punktacja postu (lajki-łapki w dół).
+  \item \textbf{ViewCount}: liczba wyświetleń postu (dotyczy tylko pytań).
+  \item \textbf{Body}: treść postu w formacie HTML.
+  \item \textbf{OwnerUserId}: identyfikator użytkownika, który jest autorem postu. Kolejna ważna zmienna, na podstawie której będziemy łączyli tabele Users i Posts w celu uzyskania informacji o osobie zadającej pytanie oraz odpowiadających na pytania.
+  \item \textbf{LastEditorUserId}, \textbf{LastEditDate}: informacje o ostatniej edycji postu.
+  \item \textbf{Title}: tytuł pytania (dla odpowiedzi pole to jest puste).
+  \item \textbf{Tags}: tagi przypisane do pytania.
+  \item \textbf{AnswerCount}, \textbf{CommentCount}: liczba odpowiedzi i komentarzy do pytania. Zmienne, które również mogą przydać się do naszych modeli.
+\end{itemize}
+
+Tabela zawiera $271948$ wierszy, z czego $100470$ to posty. Około $64$ procent postów ma udzieloną zaakceptowaną odpowiedź. Liczba ta będzie dla nas ważnym punktem odniesienia, ponieważ modelując zmienną binarną określającą, czy na dane pytanie została udzielona zaakceptowana odpowiedź, możemy przypisać z góry same wartości $1$, otrzymując $64$ procent dokładności. Będziemy oczywiście chcieli uzyskać jak najwięcej ponad ten wynik. Poza wymienionymi kolumnami, w tabeli mamy jeszcze zmienne takie, jak FavoriteCount, ClosedDate (tylko wtedy, kiedy post został zamknięty), CommunityOwnedDate i ContentLicense.
+
+\subsection{Tabela Users}
+
+Kolejną bardzo ważną tabelą jest Users. Zawiera ona kluczowe informacje o użytkownikach forum, takie jak
+
+\begin{itemize}
+  \item \textbf{Id}: unikalny identyfikator użytkownika. Ważny do łączenia tabeli z Posts.
+  \item \textbf{Reputation}: punkty reputacji użytkownika, które odzwierciedlają, jak społeczność ocenia wkład danego użytkownika. Jedna z ważniejszych zmiennych, którą będziemy wykorzystywać do modelowania.
+  \item \textbf{CreationDate}: data utworzenia konta.
+  \item \textbf{DisplayName}: wyświetlana nazwa użytkownika.
+  \item \textbf{LastAccessDate}: data ostatniej aktywności użytkownika na forum.
+  \item \textbf{WebsiteUrl}, \textbf{Location}: opcjonalne pola z adresem strony internetowej i lokalizacją użytkownika.
+  \item \textbf{AboutMe}: krótki opis profilu użytkownika.
+  \item \textbf{Views}: liczba wyświetleń profilu, wykorzystana w dalszej części analiz do modelowania.
+  \item \textbf{UpVotes}, \textbf{DownVotes}: łapki w górę i w dół.
+\end{itemize}
+
+W tabeli mamy $209507$ wierszy, które odpowiadają liczbie użytkowników forum. Tabela ta bardzo ważna w kontekście modelowania, w którym wykorzystamy zmienne utworzone na podstawie połączenia pól Users (na przykład Reputation, czy Views) z tabelą Posts po zmiennej ID. Poza wymienionymi zmiennymi w tabeli mamy jeszcze ProfileImageUrl - Url zdjęcia profilowego EmailHash (obecnie nie zawiera już danych) oraz AccountId (nie mylić z ID). 
+
+\subsection{Tabela Tags}
+
+Tabela Tags zawiera informacje o tagach używanych do kategoryzacji pytań. Kluczowe pola to:
+
+\begin{itemize}
+  \item \textbf{Id}: Unikalny identyfikator tagu.
+  \item \textbf{TagName}: Nazwa tagu, która jest używana do kategoryzowania pytań. Będziemy używali tej kolumny do łączenia tabel Posts i Tags.
+  \item \textbf{Count}: Liczba postów przypisanych do tego tagu, co może wskazywać na popularność lub znaczenie danego tematu.
+  \item \textbf{ExcerptPostId}: Identyfikator postu, który zawiera krótki opis tagu. Jest to użyteczne dla użytkowników, którzy chcą zrozumieć, do czego dany tag służy.
+  \item \textbf{WikiPostId}: Identyfikator postu, który zawiera rozszerzony opis tagu w formie wiki. To pozwala społeczności na tworzenie i utrzymywanie bogatych, szczegółowych opisów tagów.
+\end{itemize}
+
+W tabeli mamy 6187 wierszy, a co za tym idzie tagów. Pokazuje to bardzo dużą różnorodność tagów występujących na forum. Ważną dla nas kolumną z tej tabeli jest Count, która posłuży nam jako jedna ze zmiennych do modelu.
+
+\subsection{Pozostałe tabele}
+
+\begin{itemize}
+\item \textbf{Comments}: zawiera komentarze do postów. Ważne pola to m.in. Id, PostId, Score, Text, CreationDate, UserId.
+\item \textbf{PostHistory}: rejestruje historię zmian w postach, np. edycje, zmiany tagów. Kluczowe kolumny to Id, PostHistoryTypeId, PostId, CreationDate, UserId, Text.
+\item \textbf{PostLinks}: zawiera informacje o powiązaniach między postami, np. duplikaty. Ważne kolumny to Id, CreationDate, PostId, RelatedPostId, LinkTypeId.
+\item \textbf{Votes}: rejestruje głosy na posty i komentarze. Ważne pola to Id, PostId, VoteTypeId, CreationDate.
+\item \textbf{Badges}: reprezentuje odznaki przyznawane użytkownikom. Odznaki są formą uznania dla użytkowników za ich wkład w społeczność. Kluczowe kolumny to: ID, UserID, Name, Date i Class.
+\end{itemize}
+
+Z powyższych tabel nie będziemy już korzystali w dalszych częściach analizy.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Wgranie danych}
+
+<<ustawienia_globalne_SparkR_sesja, eval=TRUE, echo=FALSE, warning=FALSE, comment=F, message=F,results='hide'>>=
+library(SparkR, lib.loc=c(file.path(Sys.getenv('SPARK_HOME'),'R','lib')))
+sparkR.session(master="local[*]",sparkConfig = list(spark.driver.memory = "2g"),
+               sparkPackages = "com.databricks:spark-xml_2.12:0.17.0")
+@
+
+Oczywiście na samym początku musimy wgrać nasze dane. Wczytujemy $3$ tabele: \textit{Posts}, \textit{Users} i \textit{Tags}. W tym celu wykorzystujemy funkcję \texttt{read.df()} z pakietu \textbf{SparkR}.
+
+<<wgranie_danych, eval=TRUE, echo=TRUE>>=
+
+# ścieżki 
+# MT:  C:/Users/micha/OneDrive/Pulpit/big_data_projekt  
+# DL:  C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/
+#Projekt ABD/gaming.stackexchange.com
+# MM:  H:/Gaming
+
+df_gaming_posts <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Posts.xml", source = 
+"com.databricks.spark.xml", rootTag = "posts", rowTag = "row")
+
+df_gaming_users <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Users.xml", source = 
+"com.databricks.spark.xml", rootTag = "users", rowTag = "row")
+
+df_gaming_tags <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Tags.xml", source = 
+"com.databricks.spark.xml", rootTag = "tags", rowTag = "row")
+
+# df_gaming_badges <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Badges.xml", source = 
+# "com.databricks.spark.xml", rootTag = "badges", rowTag = "row")
+# 
+# df_gaming_comments <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Comments.xml", 
+# source = "com.databricks.spark.xml", rootTag = "comments", rowTag = "row")
+# 
+# df_gaming_posthistory <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Posthistory.xml", 
+#  source = "com.databricks.spark.xml", rootTag = "posthistory", rowTag = "row")
+# 
+# df_gaming_postlinks <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Postlinks.xml", 
+# source = "com.databricks.spark.xml", rootTag = "postlinks", rowTag = "row")
+# 
+# df_gaming_votes <- read.df("C:/STUDIA/Matematyka ( II stopień )/III semestr/Algorytmy big data/Projekt ABD/gaming.stackexchange.com/Votes.xml", source = 
+# "com.databricks.spark.xml", rootTag = "votes", rowTag = "row")
+
+@
+
+
+
+\section{Transformacje danych}
+
+Na samym początku przedstawimy do czego będziemy dążyć na etapie transformacji danych. Stworzymy zbiór danych składający się z poszczególnych pytań na forum ze zmienną objaśnianą \texttt{IsAcceptedAnswer}, która będzie zmienną binarną opisującą czy na dane pytanie została zaakceptowana któraś z odpowiedzi. Oprócz tego, dane zawierać będą $9$ zmiennych objaśniających. Zmienne \texttt{AnswerCount}, \texttt{CommentCount}, \texttt{Score} i \texttt{ViewCount} dołączymy prosto z tabeli \textit{Posts}. Zmienne \texttt{Reputation\_Question\_Owner} i \texttt{Views\_Question\_Owner} weźmiemy prosto z tabeli \textit{Users}. Oprócz tego nasze dane zawierać będą agregaty: \texttt{avg\_Reputation\_Commenting}, \texttt{avg\_Views\_Commenting}, które opisywać będą średnią wartość odpowiednio zmiennych \texttt{Reputation} i \texttt{Views} ze wszystkich użytkowników, którzy odpowiedzieli na dane pytanie. Dodatkowo, obliczymy także i dodamy zmienną \texttt{avg\_Tag\_Count}, która zawierać będzie wartość odpowiadającą średniej liczbie pytań w których występuje każdy z tagów będący w poszczególnym pytaniu.
+
+
+\subsection{Wybór potrzebnych zmiennych}
+
+Na samym początku transformacji, z naszych trzech załadowanych tabel wybierzemy tylko te kolumny, które będą nam później w jakikolwiek sposób potrzebne przy analizie. Dodatkowo, zmieniamy nazwę zmiennej \texttt{Id} z tabeli \textit{Users} na \texttt{UserId}. Poniżej załaczyliśmy fragment kodu z tymi przekształceniami.
+
+<<wybranie_potrzebnych_kolumn, eval=TRUE, echo=TRUE>>=
+df_gaming_posts <- df_gaming_posts[, c("_Id","_AcceptedAnswerId", "_AnswerCount", "_CommentCount", "_OwnerUserId",
+                                       "_ParentId", "_PostTypeId","_Score", "_Tags", "_ViewCount")]
+
+df_gaming_users<- df_gaming_users[, c("_Id", "_Reputation", "_Views")] |> withColumnRenamed("_Id", "_UserId")
+
+df_gaming_tags <- df_gaming_tags[, c("_Id", "_TagName", "_Count")]
+@
+
+\subsection{Przedstawienie graficzne tabel}
+
+W poniższym fragmencie kodu prezentujemy $10$ wybranych wierszy z naszej zmodyfikowanej tabeli \textit{Posts}.
+
+<<posts_example, eval=TRUE, echo=FALSE>>=
+
+df_gaming_posts_example <- take(df_gaming_posts,42)
+df_gaming_posts_example <- tail(df_gaming_posts_example, 10)
+df_gaming_posts_example 
+@
+
+Natomiast poniżej w tabelach \ref i \ref prezentujemy $10$ wybranych wierszy z tabel \textit{Users} \textit{Tags} odpowiednio.
+
+
+<<users_example, eval=TRUE, echo=FALSE>>=
+
+df_gaming_users_example <- take(df_gaming_users,42)
+df_gaming_users_example <- tail(df_gaming_users_example, 10)
+kbl(df_gaming_users_example,caption="10 wartości z tabeli \\textit{Users}",digits=10) %>%
+kable_styling(position = "center",
+latex_options = "HOLD_position")
+@
+
+
+<<tags_example, eval=TRUE, echo=FALSE>>=
+
+df_gaming_tags_example <- take(df_gaming_tags,42)
+df_gaming_tags_example <- tail(df_gaming_tags_example, 10)
+kbl(df_gaming_tags_example,caption="10 wartości z tabeli \\textit{Tags}",digits=10) %>%
+kable_styling(position = "center",
+latex_options = "HOLD_position")  
+@
+
+
+\subsection{Podział tabeli z Posts na tabele z pytaniami i odpowiedziami}
+
+W następnym kroku dzielimy dane z tabeli \textit{Posts} na pytania i odpowiedzi. Zmienna, która pomoże nam dokonać tego podziału, to \texttt{PostTypeId}. Wiemy, że \texttt{PostTypeId}$=$ \textbf{1} oznacza pytanie, a \texttt{PostTypeId}$=$ \textbf{2} odpowiedź na jakieś pytanie i na tej podstawie dokonamy podziału. Oprócz tego od razu zmieniamy nazwy zmiennych: w tabeli z pytaniami \texttt{Id} na \texttt{QuestionId}, \texttt{OwnerUserId} na \texttt{QuestionOwnerUserId} i w tabeli z odpowiedziami \texttt{Id} na \texttt{QuestionId}, \texttt{AnswerUserId} na \texttt{AnswerOwnerUserId}. Poniżej przedstawiony jest kod który zwraca takie dwa zbiory danych:
+
+<<podzial_pytania_odpowiedzi, eval=TRUE, echo=TRUE>>=
+df_gaming_questions <- df_gaming_posts[df_gaming_posts$`_PostTypeId`==1, ] |> 
+  withColumnRenamed("_Id", "_QuestionId") |> withColumnRenamed("_OwnerUserId", 
+                                                        "_QuestionOwnerUserId") 
+df_gaming_answers <- df_gaming_posts[df_gaming_posts$`_PostTypeId`==2, ] |> 
+  withColumnRenamed("_Id", "_AnswerId") |> withColumnRenamed("_OwnerUserId", 
+                                                        "_AnswerOwnerUserId")
+@
+
+
+Do tabeli z pytaniami \textit{Questions} dodajemy zmienną \texttt{IsAcceptedAnswer}. Zmienna ta będzie binarna i obliczana będzie wg. reguły, że jeśli występuje wartość inna niż \textbf{NA}, to przyjmować będzie wartość \textbf{1}, w przeciwnym wypadku przyjmować będzie \textbf{0}. Poniżej prezentujemy fragment kodu z dodaniem takieh kolumny:
+
+<<dodanie_IsAcceptedAnser, eval=TRUE, echo=TRUE>>=
+df_gaming_questions <- df_gaming_questions |> withColumn("_IsAcceptedAnswer",  
+ifelse(isNull(df_gaming_questions$`_AcceptedAnswerId`),0,1)) |> 
+withColumnRenamed("_OwnerUserId", "_QuestionOwnerUserId")
+@
+
+Do obu tabel: pytań \textit{Questions} i odpowiedzi \textit{Answers} dołączamy tabelę \textit{Users}. Poniżej kod prezentujący takie łączenia. Wykorzystaliśmy funkcję \texttt{join()} z pakietu \textbf{SparkR}. Łączyliśmy do \texttt{QuestionOwnerUserId} lub \texttt{AnswerOwnerUserId} odpowiadające im \texttt{UserId} z tabeli \textit{Users}. Poniżej fragment kodu z tym łączeniem:
+
+
+<<pytania_odpowiedzi_dodanie_Users, eval=TRUE, echo=TRUE>>=
+
+df_gaming_questions_with_users <- join(df_gaming_questions, 
+df_gaming_users,df_gaming_questions$`_QuestionOwnerUserId`==
+df_gaming_users$`_UserId`) #[, c("_AnswerId", "_DisplayName")]
+
+# informacje o odpowiedziach wraz z użytkownikami
+df_gaming_answers_with_users <-  join(df_gaming_answers, 
+df_gaming_users,df_gaming_answers$`_AnswerOwnerUserId`==
+df_gaming_users$`_UserId`) #[, c("_AnswerId", "_DisplayName")]
+
+@
+
+
+\subsection{Średnie z Views i Reputation dla odpowiadających na pytanie}
+
+Poniżej fragment kodu liczący dla każdego pytania średnią liczbę odsłon (\texttt{Views}) i reputacji (\texttt{Reputation}) użytkowników, którzy na nie odpowiedzieli. Użyliśmy w tym celu funkcji \texttt{agg()}, \texttt{groupBy()} i \texttt{avg()} z pakietu \textbf{SparkR}. Dodatkowo zmieniamy nazwę zmiennej \texttt{ParentId} na \texttt{ParentIdUser}.
+
+<<srednie_views_rep_odpowiadajacych_na_pytanie, eval=TRUE, echo=TRUE>>=
+df_gaming_avg_rep_views_users_per_question <- 
+agg(groupBy(df_gaming_answers_with_users,"_ParentId"), 
+avg(df_gaming_answers_with_users$`_Reputation`), 
+avg(df_gaming_answers_with_users$`_Views`))
+df_gaming_avg_rep_views_users_per_question <- 
+df_gaming_avg_rep_views_users_per_question |> 
+withColumnRenamed("avg(_Reputation)", "avg_Reputation_Commenting") |>  
+withColumnRenamed("avg(_Views)", "avg_Views_Commenting")  |>  
+withColumnRenamed("_ParentId", "ParentId_User")
+@
+
+
+Następnie połączyliśmy stworzoną przed chwilą tabelę (\texttt{AnswersWithUsers}) z tabelą z pytaniami. Wykorzystujemy tutaj zmienną \texttt{ParentIdUser}, która dla każdej odpowiedzi pokazuje nam ID pytania na które została udzielona. Wykorzystamy ją żeby połączyć się do tabeli z pytaniami. Poniżej fragment kodu zawierający takie połączenie.
+
+<<dodanie_do_pytan_srednie_views_rep_odpowiadajacych_na_pytanie, eval=TRUE, echo=TRUE>>=
+df_gaming_questions_with_agg_rep_views_users <- join(df_gaming_questions, 
+                              df_gaming_avg_rep_views_users_per_question, 
+                                                     
+                              df_gaming_questions$`_QuestionId` == 
+df_gaming_avg_rep_views_users_per_question$`ParentId_User`)
+
+@
+
+
+\subsection{Dodanie Views i Reputation pytającego z tabeli Users}
+
+Ponadto dodajemy \texttt{Views} i \texttt{Reputation} pytającego do naszej tabeli z pytaniami. Poniżej fragment kodu gdzie pokazaliśmy to połączenie. Dla każdej wartości zmiennej \texttt{QuestionOwnerUserId} z tabeli z pytaniami przyporządkowujemy odpowiadającą wartość zmiennej \texttt{UserId} z tabeli \textit{Users}.
+
+<<dodwanie_reputacji_pytajacego_df_questions, eval=TRUE, echo=TRUE>>=
+
+## DODAWANIE REPUTACJI PYTAJACEGO
+
+# dodajemy reputation, views od pytającego, łączymy tabele wyzej z tabelą 
+#Users, klucz: _QuestionOwnerUserId = _UserId
+df_gaming_questions_with_agg_rep_views_users_and_owner_rep <- 
+join(df_gaming_questions_with_agg_rep_views_users, df_gaming_users,
+                                                                   
+df_gaming_questions_with_agg_rep_views_users$`_QuestionOwnerUserId` == 
+df_gaming_users$`_UserId`)
+
+@
+
+
+\subsection{Dodanie średniej liczby wystąpień na całym froum każdego tagu z pytania}
+
+
+Zaczniemy od wyjściowej tabeli pytań z użytkownikami - \texttt{QuestionsWithUser}. Każda wartość zmiennej \texttt{Tags} zawiera wszystkie tagi danego pytania. W pierwszym kroku chcemy usunąc znaki separujące poszczególne tagi (">", "<", "<>"), a przetransformować wszystkie tagi z poszczególnego pytania do jednej listy. Aby to zrobić, wykorzystamy funkcje \texttt{split\_string()}, \texttt{rtrim()} i \texttt{ltrim()} z pakietu \textbf{SparkR}. Poniżej fragment kodu przedstawiający tą transformację:
+
+<<tagi_do_listy, eval=TRUE, echo=TRUE>>=
+df_gaming_tags_in_array <- df_gaming_questions_with_users|> withColumn("_Tags", 
+split_string(rtrim(ltrim(df_gaming_questions_with_users$`_Tags`, '<'), '>'), 
+             '><'))
+@
+
+
+W kolejnym kroku rozbijamy listę tagów z każdego wiersza na wiele wierszy. Robimy to za pomocą funkcji \texttt{explode} z pakietu \textbf{SparkR}. Ponadto wybieramy tylko $4$ zmienne potrzebne nam później. Poniżej fragment kodu z tym przejściem:
+
+<<rozbicie_listy_tagow_na_wiele_wierszy, eval=TRUE, echo=TRUE>>=
+df_gaming_questions_to_tags <- df_gaming_tags_in_array |> 
+withColumn('_tag', explode(df_gaming_tags_in_array$`_Tags`)) 
+df_gaming_questions_to_tags <- df_gaming_questions_to_tags[, 
+c("_QuestionId", "_AcceptedAnswerId", "_QuestionOwnerUserId","_tag")]
+@
+
+
+Następnie, do stworzonej przed chwilą tabeli dołączamy tabelę \textit{Tags}. Oczywiście robimy to łącząc się po prostu po nazwie tagu:
+
+<<tags_liczba_wystapien, eval=TRUE, echo=TRUE>>=
+df_gaming_questions_tags_counts <- join(df_gaming_questions_to_tags, 
+                                        df_gaming_tags,
+                                        df_gaming_questions_to_tags$`_tag` == 
+                                        df_gaming_tags$`_TagName`) 
+df_gaming_questions_tags_counts <- df_gaming_questions_tags_counts[, 
+                                  c("_QuestionId",  "_tag", "_Count")]
+@
+
+
+Z kolei w tym kroku dla każdego poszczególnego pytania obliczamy średnią wystąpień tagów będących w tym pytaniu. Robimy to za pomocą funkcji \texttt{agg()}, \texttt{groupBy()} i \texttt{avg()}. Dodatkowo lekko zmieniamy nazwy poszczególnych zmiennych. 
+
+<<srednia_wystapien_tagow_z_pytania, eval=TRUE, echo=TRUE>>=
+df_gaming_questions_tags_counts_avg <- agg(groupBy(df_gaming_questions_tags_counts, 
+                                          "_QuestionId"),
+                                           
+                                      avg(df_gaming_questions_tags_counts$`_Count`))
+
+df_gaming_questions_tags_counts_avg <- df_gaming_questions_tags_counts_avg |> 
+withColumnRenamed("avg(_Count)", "avg_Tag_Count")
+df_gaming_questions_tags_counts_avg <- df_gaming_questions_tags_counts_avg |> 
+withColumnRenamed("_QuestionId", "_QuestionId_v2")
+@
+
+
+Dołączamy stworzoną przed chwilą tabelę z popularnością tagów do całej reszty potrzebnych nam zmiennych. W tym celu łączymy się znowu po ID pytania. Poniżej fragment kodu prezentujący to łączenie. 
+
+<<dolaczenie_agregatow_tagow_do_reszty, eval=TRUE, echo=TRUE>>=
+df_gaming_questions_agg_Commenting_Owner_Tag <- 
+join(df_gaming_questions_with_agg_rep_views_users_and_owner_rep, 
+df_gaming_questions_tags_counts_avg,
+df_gaming_questions_with_agg_rep_views_users_and_owner_rep$`_QuestionId` == 
+df_gaming_questions_tags_counts_avg$`_QuestionId_v2`)
+@
+
+
+\subsection{Wybór zmiennych do tworzenia modelów i standaryzacja}
+ 
+
+Wybieramy zmienne, na podstawie których chcemy tworzyć modele oraz lekko edytujemy ich nazwy:
+
+<<df_gaming_for_model, eval=TRUE, echo=TRUE>>=
+df_gaming_for_model <- df_gaming_questions_agg_Commenting_Owner_Tag |> 
+withColumnRenamed("_IsAcceptedAnswer","IsAcceptedAnswer") |> 
+withColumnRenamed("_AnswerCount","AnswerCount") |> 
+withColumnRenamed("_CommentCount","CommentCount") |> 
+withColumnRenamed("_Score","Score") |> 
+withColumnRenamed("_ViewCount","ViewCount") |> 
+withColumnRenamed("_Reputation", "Reputation_Question_Owner") |> 
+withColumnRenamed("_Views", "Views_Question_Owner")
+df_gaming_for_model <- df_gaming_for_model[, c("IsAcceptedAnswer", "AnswerCount", 
+                                               "CommentCount",
+                                               "Score", "ViewCount",
+                                               "avg_Reputation_Commenting", 
+                                               "avg_Views_Commenting",
+                                               "Reputation_Question_Owner", 
+                                        "Views_Question_Owner", "avg_Tag_Count")]
+#colnames(df_gaming_questions_agg_Commenting_Owner_Tag)
+#colnames(df_gaming_for_model)
+@
+
+
+W ostatnim kroku, standaryzujemy niektóre zmienne numeryczne ponieważ zakres ich wartości jest dużo większy od innych, co może być problemem przy tworzeniu niektórych modeli. Oto lista tych zmiennych \texttt{ViewCount}, \texttt{avg\_Reputation\_Commenting}, 
+\texttt{avg\_Views\_Commenting}, \texttt{Reputation\_Question\_Owner}, \texttt{Views\_Question\_Owner}, 
+\texttt{avg\_Tag\_Count}. W tym celu musimy obliczyć średnie i odchylenia standardowe zmiennych, wykorzystamy do tego funkcję \texttt{summary()} z pakietu \textbf{SparkR}. Następnie w klasyczny sposób, odejmując średnie i dzieląc przez odchylenia standardowe, znormalizujemy wybrane zmienne.
+
+<<standaryzacja_zmiennych_df_gaming_for_model, eval=TRUE, echo=TRUE>>=
+
+#funkcja do zliczania średniej i odchylenia standardowego
+summary <- collect(SparkR::summary(df_gaming_for_model)) 
+
+mean <- summary[2,6]
+sd <- summary[3,6]
+
+df_gaming_for_model_standarized <- df_gaming_for_model |> 
+mutate(ViewCount=(df_gaming_for_model$ViewCount - mean)/sd)
+#View(collect(d1))
+
+###### avg_Reputation_Commenting
+
+mean<-summary[2,7]
+sd<-summary[3,7]
+
+df_gaming_for_model_standarized <- df_gaming_for_model_standarized |> 
+mutate(avg_Reputation_Commenting=(df_gaming_for_model$avg_Reputation_Commenting
+                                  - mean)/sd)
+
+
+###### avg_Views_Commenting
+
+mean<-summary[2,8]
+sd<-summary[3,8]
+
+df_gaming_for_model_standarized <- df_gaming_for_model_standarized |> 
+mutate(avg_Views_Commenting=(df_gaming_for_model$avg_Views_Commenting - mean)/sd)
+
+
+###### Reputation_Question_Owner
+
+mean<-summary[2,9]
+sd<-summary[3,9]
+
+df_gaming_for_model_standarized <- df_gaming_for_model_standarized |> 
+mutate(Reputation_Question_Owner=(df_gaming_for_model$Reputation_Question_Owner
+                                  - mean)/sd)
+
+
+###### Views_Question_Owner
+
+mean<-summary[2,10]
+sd<-summary[3,10]
+
+df_gaming_for_model_standarized <- df_gaming_for_model_standarized |> 
+mutate(Views_Question_Owner=(df_gaming_for_model$Views_Question_Owner - mean)/sd)
+
+
+###### avg_Tag_count
+
+mean<-summary[2,11]
+sd<-summary[3,11]
+
+df_gaming_for_model_standarized <- df_gaming_for_model_standarized |> 
+mutate(avg_Tag_Count=(df_gaming_for_model$avg_Tag_Count - mean)/sd)
+
+@
+
+\subsection{Przedstawienie końcowych danych użytych przy konstrukcji modelów}
+
+Poniżej prezentujemy $10$ pierwszych wierszy z naszego końcowego zbioru danych użytego przy tworzeniu modeli - w wersji ze znormalizowanymi niektórymi zmiennymi.
+
+<<view_test_model, eval=TRUE, echo=TRUE>>=
+df_gaming_for_model_standarized_df_r <- head(df_gaming_for_model_standarized, 10)
+df_gaming_for_model_standarized_df_r 
+@
+
+
+
+
+
+
+
+\section{Tworzenie modeli}
+Na początku stworzymy model za pomocą regresji logistycznej, używając funkcji \texttt{spark.logit}. Zbadamy przy tym:
+\begin{itemize}
+    \item Dokładność (\textit{Accuracy}): Miara, która określa stosunek poprawnie sklasyfikowanych przypadków do ogólnej liczby przypadków w zbiorze danych. Formuła dokładności to:
+    $$
+    Accuracy = \frac{TP +TN}{TP + TN + FP + FN}
+    $$
+    
+    \item Czułość (\textit{Sensitivity}, \textit{True Positive Rate}): Miara, która określa zdolność modelu do poprawnego zidentyfikowania pozytywnych przypadków. Formuła czułości to:
+    $$
+    Sensitivity = \frac{TP}{TP + FN}
+    $$
+    
+    \item Swoistość (\textit{Specificity}, \textit{True Negative Rate}): Miara, która określa zdolność modelu do poprawnego zidentyfikowania negatywnych przypadków. Formuła swoistości to:
+    $$
+    Specificity = \frac{TN}{TN + FP}
+    $$
+    
+    \item Precyzja (\textit{Precision}, \textit{Positive Predictive Value}): Miara, która określa stosunek poprawnie sklasyfikowanych pozytywnych przypadków do wszystkich przypadków sklasyfikowanych jako pozytywne. Formuła precyzji to:
+    $$
+    Precision = \frac{TP}{TP + FP}
+    $$
+    
+    \item Indeks Youdena (\textit{Youden's J statistic}): Statystyka, która mierzy zdolność testu do poprawnego identyfikowania zarówno pozytywnych, jak i negatywnych przypadków. Indeks Youdena to suma czułości i swoistości minus jeden:
+    $$
+    Youden = Sensitivity + Specificity - 1
+    $$
+\end{itemize}
+Wartości TP,TN,FP i FN są brane z poniższej macierzy pomyłek.
+
+\begin{center}
+\makegapedcells
+\begin{tabular}{cc|cc}
+\multicolumn{2}{c}{}
+            &   \multicolumn{2}{c}{Predicted} \\
+    &       &   Yes &   No              \\ 
+    \cline{2-4}
+\multirow{2}{*}{\rotatebox[origin=c]{90}{Actual}}
+    & Yes   & TP   & FN                 \\
+    & No    & FP    & TN                \\ 
+    \cline{2-4}
+    \end{tabular}
+\end{center}
+\vspace{1cm}
+Wyniki przedstawimy w tabelkach.
+
+<<model_logistyczny, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model_standarized
+test <- df_gaming_for_model_standarized
+model1_gaming <- spark.logit(training, IsAcceptedAnswer~., maxIter = 100) 
+#ElasticNetParam = 0 default
+@
+Tworzymy tabele \ref{tab:coefficients} pokazującą oszacowane wartości współczynników, za pomocą funkcji \texttt{summary}.
+<<xtable_wspolczynniki,echo=FALSE, eval=TRUE, results='asis'>>=
+model1_gaming_coefficients <- as.data.frame(summary(model1_gaming))
+table <- xtable(model1_gaming_coefficients, 
+                digits = 3, 
+                row.names = FALSE, 
+                caption = "Oszacowane wartości współczynników dla modelu logistycznego.", 
+                label = "tab:coefficients")
+colnames(table) <- c("Oszacowanie współczynników")
+rownames(table) <- c("(Intercept)","AnswerCount","CommentCount","Score","ViewCount","avg Reputation Commenting",
+                     "avg Views Commenting","Reputation Question Owner","Views Question Owner","avg Tag Count")
+align(table) <- "|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+
+<<model_logistyczny_tabelka, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_gaming, df_gaming_for_model_standarized)
+#library(Metrics)
+
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu logistycznego.", 
+                label = "tab:table1")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Widzimy po tabelce \ref{tab:table1}, że są osiągane niskie wyniki
+\\
+\\
+Następnie tworzymy model na podstawie drzew decyzyjnych (\textit{decision tree}) używając funkcji \texttt{spark.decisionTree}.
+<<model_drzewa_decyzyjne, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model
+
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_dtree <- spark.decisionTree(training, IsAcceptedAnswer ~ ., 
+                                   "classification")
+
+# Model summary
+summary(model1_dtree)
+@
+Istotność zmiennych drzewa decyzyjnego znajduje się poniżej.
+
+<<model_drzewa_decyzyjne_istotnosc_wspolczynnikow, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+table <- data.frame(AnswerCount =0.006129,
+                    CommentCount  =0,
+                    Score   =0.00601,
+                    ViewCount =0,
+                    avg_Reputation_Commenting =0.056529,
+                    avg_Views_Commenting = 0.001172,
+                    Reputation_Question_Owner = 0.92489,
+                    Views_Question_Owner =0.00527,
+                    avg_Tag_Count =0)
+table <- t(as.matrix(table))
+colnames(table) <- c("Istotność współczynników")
+rownames(table) <- c("AnswerCount","CommentCount","Score","ViewCount","avg Reputation Commenting",
+                     "avg Views Commenting","Reputation Question Owner","Views Question Owner","avg Tag Count")
+table <- xtable(table, 
+                digits = 10, 
+                row.names = TRUE, 
+                caption = "Istotność współczynników dla drzewa decyzyjnego.", 
+                label = "tab:istotnosc_wspolczynnikow")
+align(table) <- "|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+
+<<model_drzewa_decyzyjne_tabelka, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_dtree, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na drzewach decyzyjnych.", 
+                label = "tab:table2")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Widzimy, że na tabeli \ref{tab:table2} widnieją dużo lepsze wyniki, niż na tabeli \ref{tab:table1}.
+\\
+\\
+Następnie tworzymy model na podstawie lasu losowego (\textit{random forest}) używając funkcji 
+
+\texttt{spark.randomForest}.
+<<model_las_losowy, eval=TRUE, echo=TRUE>>=
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_RF <- spark.randomForest(training, IsAcceptedAnswer ~ ., 
+                                "classification")
+
+# Model summary
+#summary(model1_RF)
+@
+
+<<model_las_losowy_tabelka, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_RF, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na lesie losowym.", 
+                label = "tab:table3")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Widzimy po tabelce \ref{tab:table3}, że jest osiągana niższa dokładność niż w tabelce \ref{tab:table2}.
+\\
+\\
+Z uwagi na to, że najlepszą dokładność uzyskaliśmy dla modelu opartego na drzewach losowych, spróbujemy stworzyć inne modele, na podstawie zmienionych poszczególnych parametrów w funkcji \texttt{spark.decisionTree} oraz wyodrębnieniu istotnych zmiennych. Na początku skupimy się na stworzeniu modelu z trzeba najbardziej istotnymi zmiennymi z tabeli \ref{tab:istotnosc_wspolczynnikow}. Będą to zmienne \texttt{Reputation\_Question\_Owner}. \texttt{avg\_Reputation\_Commenting} i \texttt{AnswerCount}.
+<<model_drzewa_decyzyjne_variables, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model
+
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_dtree_significant_variables <- spark.decisionTree(training, 
+             IsAcceptedAnswer ~ 
+             AnswerCount+avg_Reputation_Commenting
+             +Reputation_Question_Owner, "classification")
+
+# Model summary
+#summary(model1_dtree_significant_variables)
+@
+
+<<model_drzewa_decyzyjne_tabelka_variables, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_dtree_significant_variables, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na drzewach decyzyjnych dla konkretnych zmiennych.", 
+                label = "tab:table4")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+
+
+Na koniec skupimy się na stworzeniu modelu ze zmienionym parametrem \texttt{maxDepth} $ = 3,7,9$ (parametr \texttt{maxDepth} $= 5$ jest ustawiony domyślnie).
+\\
+\\
+Zaczynamy od \texttt{maxDepth}$ = 3$.
+<<model_drzewa_decyzyjne_maxDepth3, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model
+
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_dtree_significant_maxDepth3 <- spark.decisionTree(training, 
+                                                         IsAcceptedAnswer ~ ., 
+                                      "classification", maxDepth = 3)
+
+# Model summary
+#summary(model1_dtree_significant_maxDepth3)
+@
+
+<<model_drzewa_decyzyjne_tabelka_maxDepth_3, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_dtree_significant_maxDepth3, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na drzewach decyzyjnych dla \\texttt{maxDepth}$ = 3$.", 
+                label = "tab:table5")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Następnie \texttt{maxDepth}$ = 7$.
+<<model_drzewa_decyzyjne_maxDepth7, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model
+
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_dtree_significant_maxDepth7 <- spark.decisionTree(training, 
+                                                         IsAcceptedAnswer ~ ., 
+                                      "classification", maxDepth = 7)
+
+# Model summary
+#summary(model1_dtree_significant_maxDepth7)
+@
+
+<<model_drzewa_decyzyjne_tabelka_maxDepth_7, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_dtree_significant_maxDepth7, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na drzewach decyzyjnych dla \\texttt{maxDepth}$ = 7$.", 
+                label = "tab:table6")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Na koniec \texttt{maxDepth}$ = 9$
+<<model_drzewa_decyzyjne_maxDepth9, eval=TRUE, echo=TRUE>>=
+training <- df_gaming_for_model
+
+# Fit a DecisionTree classification model with spark.decisionTree
+model1_dtree_significant_maxDepth9 <- spark.decisionTree(training, 
+                                                         IsAcceptedAnswer ~ ., 
+                                      "classification", maxDepth = 9)
+
+# Model summary
+#summary(model1_dtree_significant_maxDepth9)
+@
+
+<<model_drzewa_decyzyjne_tabelka_maxDepth_9, eval=TRUE, echo=FALSE, cache=TRUE, results='asis'>>=
+predictions <- predict(model1_dtree_significant_maxDepth9, df_gaming_for_model)
+
+# Prediction
+predictions$result  <- ifelse((predictions$IsAcceptedAnswer == predictions$prediction), 
+                              "TRUE", "FALSE")
+correct <- NROW(predictions[predictions$result == "TRUE",])
+
+ile.wierszy <- NROW(training) 
+
+accuracy <- correct/ile.wierszy
+
+confusion_matrix <- predictions |> group_by(predictions$`IsAcceptedAnswer`, predictions$`prediction`) |>
+  summarize(count = n(predictions$`IsAcceptedAnswer`)) |> withColumn("prediction", cast(predictions$`prediction`,"double")) 
+View(collect(confusion_matrix))
+
+confusion_matrix_values <- confusion_matrix |> select("count")
+
+TP_take <- take(confusion_matrix_values,2)
+TP <- as.vector(unlist(tail(TP_take,1)))
+TN_take <- take(confusion_matrix_values,3)
+TN <- as.vector(unlist(tail(TN_take,1)))
+FP <- as.vector(unlist(take(confusion_matrix_values,1)))
+FN_take <- take(confusion_matrix_values,4)
+FN <- as.vector(unlist(tail(FN_take,1)))
+
+czulosc <- TP/(TP+FN)
+
+swoistosc <- TN/(TN+FP)
+
+precyzja <- TP/(TP+FP)
+
+indeks_Youdena <- czulosc + swoistosc - 1
+
+table <- data.frame(dokladnosc=accuracy,
+                    czulosc=czulosc,
+                    swoistosc=swoistosc,
+                    precyzja=precyzja,
+                    indeks_Youdena=indeks_Youdena)
+colnames(table) <- c("Dokładność","Czulość","Swoistość","Precyzja","Indeks Youdena")
+rownames(table) <- c("wyniki")
+table <- xtable(table, 
+                digits = 3, 
+                row.names = TRUE, 
+                caption = "Miary opisujące wydajność modelu opartego na drzewach decyzyjnych dla \\texttt{maxDepth}$ = 9$.", 
+                label = "tab:table7")
+align(table) <- "|c|c|c|c|c|c|"
+print(table, type = "latex", table.placement = "H",sanitize.text.function=function(x){x}, scalebox = 1)
+@
+Po tabelkach \ref{tab:table7}, \ref{tab:table6} i \ref{tab:table5}, że im wyższy parametr \texttt{maxDepth} tym większa dokładność jest osiągana.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Podsumowanie}
+Podsumowując wyniki osiągane dla wszystkich rozważanych modeli można dojść do wniosku, że najlepsze wyniki są osiągane dla modeli wykonanych przy pomocy drzew decyzyjnych. W każdym przypadku można zauważyć, że modele osiągają lepsze wyniki przy poprawnym sklasyfikowaniu pozytywnych przypadków (czułość), niż przy poprawnym klasyfikowaniu negatywnych przypadków (swoistość). Przez to wartości Indeksu Yowdena nie były za wysokie.  
+
+
+
+
+\end{document}
